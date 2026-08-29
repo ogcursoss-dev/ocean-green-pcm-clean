@@ -1,0 +1,185 @@
+// Ocean Green Treinamentos - Schema PCM
+// Banco de dados: Supabase (PostgreSQL)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =================== USUÁRIOS ===================
+model User {
+  id           String   @id @default(cuid())
+  cpf          String   @unique // CPF limpo (apenas dígitos)
+  name         String
+  email        String?
+  passwordHash String
+  role         String   @default("STUDENT") // ADMIN | STUDENT
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  classMemberships ClassMember[]
+  examAssignments  ExamAssignment[]
+  examAttempts     ExamAttempt[]
+  simulations      Simulation[]
+}
+
+// =================== TURMAS ===================
+model Class {
+  id          String   @id @default(cuid())
+  name        String   // ex: "Turma PC 2026"
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members ClassMember[]
+  exams    Exam[]
+}
+
+model ClassMember {
+  id        String   @id @default(cuid())
+  userId    String
+  classId   String
+  enrolledAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  class Class @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, classId])
+}
+
+// =================== DISCIPLINAS / MATÉRIAS ===================
+model Subject {
+  id          String   @id @default(cuid())
+  name        String   // ex: "Manutenção Preventiva"
+  category    String?  // agrupamento maior: "PCM Básico", "Confiabilidade", "Lean"
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  questions Question[]
+}
+
+// =================== BANCO DE QUESTÕES ===================
+model Question {
+  id            String   @id @default(cuid())
+  subjectId     String
+  subject       Subject  @relation(fields: [subjectId], references: [id])
+  difficulty    String   // EASY | MEDIUM | HARD
+  statement     String   // enunciado da questão
+  optionA       String
+  optionB       String
+  optionC       String
+  optionD       String
+  correctAnswer String   // "A" | "B" | "C" | "D"
+  explanation   String   // gabarito comentado
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  examQuestions ExamQuestion[]
+}
+
+// =================== PROVAS / AVALIAÇÕES ===================
+model Exam {
+  id              String   @id @default(cuid())
+  title           String
+  description     String?
+  classId         String
+  class           Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  type            String   @default("OFFICIAL") // OFFICIAL | SIMULATION
+  startDateTime   DateTime // início da janela
+  endDateTime     DateTime // fim da janela
+  durationMinutes Int      @default(60) // tempo para realização
+  passingScore    Float    @default(60) // nota mínima aprovação (6.0)
+  shuffleQuestions Boolean @default(false)
+  showResults     String   @default("AFTER_END") // IMMEDIATE | AFTER_END | MANUAL
+  active          Boolean  @default(true)
+  // ===== Randomização por aluno (anti-cola) =====
+  questionCount   Int      @default(20) // número de questões sorteadas por aluno
+  poolSubjectIds  String?  // JSON array de subjectIds (null = todas as 300)
+  poolDifficulty  String?  // EASY | MEDIUM | null (todas)
+  // ===== Recuperação automática =====
+  isRecovery      Boolean  @default(false) // marca provas de recuperação
+  parentExamId    String?  // link para a prova original (se for recuperação)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  questions   ExamQuestion[]
+  assignments ExamAssignment[]
+  attempts    ExamAttempt[]
+}
+
+model ExamQuestion {
+  id         String   @id @default(cuid())
+  examId     String
+  questionId String
+  order      Int      @default(0)
+
+  exam     Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([examId, questionId])
+}
+
+// =================== ATRIBUIÇÃO DE PROVAS (turma ou individual) ===================
+model ExamAssignment {
+  id             String   @id @default(cuid())
+  examId         String
+  userId         String?  // null = turma inteira | preenchido = aluno específico
+  classId        String?  // snapshot da turma na atribuição
+  // Override de horário para aluno específico (prova antecipada)
+  customStart    DateTime? // se null, usa exam.startDateTime
+  customEnd      DateTime? // se null, usa exam.endDateTime
+  customDuration Int?     // se null, usa exam.durationMinutes
+  notes          String?
+  createdAt      DateTime @default(now())
+
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// =================== TENTATIVAS / RESPOSTAS DE PROVAS OFICIAIS ===================
+model ExamAttempt {
+  id         String   @id @default(cuid())
+  examId     String
+  userId     String
+  status     String   @default("IN_PROGRESS") // IN_PROGRESS | SUBMITTED | AUTO_SUBMITTED
+  answers    String   // JSON: [{questionId, selected}]
+  // ===== Questões sorteadas para este aluno (randomização anti-cola) =====
+  questionIds String? // JSON array de questionIds sorteados (null se usar exam.questions fixas)
+  startedAt  DateTime @default(now())
+  submittedAt DateTime?
+  score       Float?   // percentual de acertos (0-100)
+  correctCount Int?
+  totalCount  Int?
+  timeSpentSeconds Int?
+
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([examId, userId])
+}
+
+// =================== SIMULADOS LIVRES (modo estudo) ===================
+model Simulation {
+  id         String   @id @default(cuid())
+  userId     String
+  subjectIds String   // JSON array de subjectIds
+  difficulty String?  // filtro de dificuldade ou null = misto
+  questionCount Int
+  questionIds String  // JSON array de questionIds sorteados
+  answers    String   // JSON: [{questionId, selected}]
+  score      Float?   // percentual
+  correctCount Int?
+  timeSpentSeconds Int?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
